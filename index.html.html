@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>CPR Training PRO</title>
+    <style>
+        /* タッチの反応を最優先にする設定 */
+        * { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+        
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; background: #121212; color: white; margin: 0; overflow: hidden; height: 100vh; display: flex; align-items: center; justify-content: center; user-select: none; -webkit-user-select: none; }
+        #app { width: 100%; max-width: 450px; background: #1e1e1e; height: 100%; padding: 20px; box-sizing: border-box; display: flex; flex-direction: column; justify-content: space-between; }
+        .header { display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
+        .score-val { font-size: 32px; color: #f1c40f; font-weight: bold; }
+        
+        .timer-gauge { height: 10px; background: #333; border-radius: 5px; margin: 15px 0; overflow: hidden; flex-shrink: 0; }
+        #timer-fill { height: 100%; width: 100%; background: #e74c3c; transition: width 0.1s linear; }
+
+        #push-zone { flex-grow: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; position: relative; width: 100%; }
+        
+        /* ハートのサイズと影 */
+        #cpr-heart-svg { width: 320px; height: 320px; transition: transform 0.05s ease-out; filter: drop-shadow(0 0 20px rgba(231, 76, 60, 0.4)); }
+        .pushing #cpr-heart-svg { transform: scale(0.8); }
+
+        #bpm-display { margin-top: -20px; text-align: center; pointer-events: none; z-index: 10; }
+
+        .btn-start { width: 100%; height: 80px; font-size: 26px; border-radius: 20px; border: none; background: #3498db; color: white; font-weight: bold; box-shadow: 0 6px #2980b9; cursor: pointer; margin-top: 10px; flex-shrink: 0; }
+        .btn-start:active { transform: translateY(4px); box-shadow: 0 2px #2980b9; }
+        #hint { color: #888; margin-bottom: 5px; font-weight: bold; font-size: 14px; pointer-events: none; }
+    </style>
+</head>
+<body>
+
+<div id="app">
+    <div class="header">
+        <div><small>HI-SCORE</small><br><span id="hi-val" class="score-val">0</span></div>
+        <div><small>SCORE</small><br><span id="score-val" class="score-val">0</span></div>
+    </div>
+
+    <div class="timer-gauge"><div id="timer-fill"></div></div>
+
+    <div id="push-zone" onpointerdown="handleHeartPush(event)">
+        <svg id="cpr-heart-svg" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" fill="#e74c3c"/>
+        </svg>
+
+        <div id="bpm-display">
+            <span id="bpm-now" style="font-size: 60px; font-weight: bold; color: white;">--</span><br>
+            <span style="font-size: 18px; color: #aaa; font-weight: bold; letter-spacing: 2px;">BPM</span>
+        </div>
+        
+        <p id="hint" style="display:none;">目標: 100〜120 BPM</p>
+    </div>
+    
+    <button id="main-btn" class="btn-start" onclick="startTraining()">トレーニング開始</button>
+</div>
+
+<script>
+    let score = 0, lastPush = 0, timeLeft = 30, isPlaying = false, goodCount = 0, totalCount = 0;
+    let pushIntervals = []; // 速度安定化のための履歴保存
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const rankingData = JSON.parse(localStorage.getItem('cpr_ranking')) || [];
+    document.getElementById('hi-val').innerText = rankingData[0]?.score || 0;
+
+    function playPiyoSound() {
+        const osc = audioCtx.createOscillator(), gain = audioCtx.createGain(), now = audioCtx.currentTime;
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(880, now);
+        osc.frequency.exponentialRampToValueAtTime(1200, now + 0.08);
+        gain.gain.setValueAtTime(0.1, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+        osc.connect(gain).connect(audioCtx.destination);
+        osc.start(); osc.stop(now + 0.1);
+    }
+
+    function startTraining() {
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        isPlaying = true;
+        document.getElementById('main-btn').style.display = 'none';
+        document.getElementById('hint').style.display = 'block';
+        score = 0; timeLeft = 30; goodCount = 0; totalCount = 0; pushIntervals = [];
+        document.getElementById('score-val').innerText = score;
+
+        const timer = setInterval(() => {
+            timeLeft -= 0.1;
+            document.getElementById('timer-fill').style.width = (timeLeft / 30 * 100) + "%";
+            if (timeLeft <= 0) { clearInterval(timer); finishTraining(); }
+        }, 100);
+    }
+
+    function handleHeartPush(e) {
+        if (!isPlaying) return;
+        // マウスの右クリックや、余計なイベントを防止
+        if (e.pointerType === 'mouse' && e.button !== 0) return;
+
+        playPiyoSound();
+        const now = Date.now(), pushZone = document.getElementById('push-zone');
+        totalCount++;
+        pushZone.classList.add('pushing');
+        setTimeout(() => pushZone.classList.remove('pushing'), 50);
+
+        if (lastPush !== 0) {
+            const currentInterval = now - lastPush;
+            pushIntervals.push(currentInterval);
+            if (pushIntervals.length > 3) pushIntervals.shift(); // 直近3回を保持
+
+            // 平均間隔からBPMを計算（これで表示が安定します）
+            const avgInterval = pushIntervals.reduce((a, b) => a + b) / pushIntervals.length;
+            const bpm = Math.round(60000 / avgInterval);
+            
+            document.getElementById('bpm-now').innerText = bpm;
+            if (bpm >= 100 && bpm <= 120) {
+                score += 100; goodCount++;
+                document.getElementById('bpm-now').style.color = "#2ecc71";
+                if (navigator.vibrate) navigator.vibrate(15);
+            } else {
+                document.getElementById('bpm-now').style.color = "#e74c3c";
+            }
+        }
+        lastPush = now;
+        document.getElementById('score-val').innerText = score;
+    }
+
+    function finishTraining() {
+        isPlaying = false;
+        const accuracy = Math.round((goodCount / totalCount) * 100) || 0;
+        const userName = prompt(`終了！スコア: ${score} / 正確性: ${accuracy}%\n名前を入力：`, "プレイヤー") || "ななし";
+        rankingData.push({ name: userName, score: score });
+        rankingData.sort((a, b) => b.score - a.score);
+        localStorage.setItem('cpr_ranking', JSON.stringify(rankingData.slice(0, 3)));
+        location.reload(); 
+    }
+</script>
+</body>
+</html>
